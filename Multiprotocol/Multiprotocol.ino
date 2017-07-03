@@ -187,6 +187,7 @@ void_function_t remote_callback = 0;
 // Init
 void setup()
 {
+_delay_ms(1000); // neede for ATMEGA2560 version of openTX, otherwise it freeze at bootloader
 	// General pinout
 	#ifdef ORANGE_TX
 		//XMEGA
@@ -525,6 +526,36 @@ uint8_t Update_All()
 			CHANGE_PROTOCOL_FLAG_on;							//reload protocol to rebind
 			BIND_CH_PREV_on;
 		}
+		
+		// PPM protocol change by channel value
+		if(PPM_PROTOCOL_CH > 0 && mode_select!=MODE_SERIAL) {
+		   uint16_t temp_mode_select = (Servo_data[PPM_PROTOCOL_CH-1] - 975)/50; // PPM=1000us is protokol 0, PPM=1050us is protocol 1,...
+		   if(temp_mode_select != mode_select && temp_mode_select > 0) { // if selected protocol is not same as current, then change and reload protocol
+			 mode_select = temp_mode_select - 1;
+			 protocol		=	PPM_prot[mode_select].protocol;
+			 cur_protocol[1] = protocol;
+			 sub_protocol   	=	PPM_prot[mode_select].sub_proto;
+			 RX_num			=	PPM_prot[mode_select].rx_num;
+			 option			=	PPM_prot[mode_select].option;
+			 if(PPM_prot[mode_select].power)		POWER_FLAG_on;
+			 if(PPM_prot[mode_select].autobind)	{ AUTOBIND_FLAG_on; } else { AUTOBIND_FLAG_off; }
+			 mode_select++;
+			 CHANGE_PROTOCOL_FLAG_on;				//change protocol
+			 WAIT_BIND_off;			 
+			 #if defined(TELEMETRY)
+				PPM_Telemetry_serial_init();// Configure serial for telemetry
+			 #endif
+			}
+			if(IS_BIND_CH_PREV_off && Servo_data[BIND_CH-1]>PPM_MAX_COMMAND && Servo_data[THROTTLE]<(servo_min_100+25))
+			{ // Autobind is on and BIND_CH went up and Throttle is low
+				CHANGE_PROTOCOL_FLAG_on;							//reload protocol to rebind
+				AUTOBIND_FLAG_on;
+				BIND_CH_PREV_on;
+			}		   
+		   
+		}
+		// END PPM protocol change by channel value
+		
 		if(IS_BIND_CH_PREV_on && Servo_data[BIND_CH-1]<PPM_MIN_COMMAND)
 		{
 			BIND_CH_PREV_off;

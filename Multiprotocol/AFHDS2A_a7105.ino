@@ -11,6 +11,21 @@
 
  You should have received a copy of the GNU General Public License
  along with Multiprotocol.  If not, see <http://www.gnu.org/licenses/>.
+ 
+#define IBUS_MEAS_TYPE_INTV		0x00    // Internal Voltage
+#define IBUS_MEAS_TYPE_TEM		0x01    // Temperature
+#define IBUS_MEAS_TYPE_MOT		0x02    // RPM
+#define IBUS_MEAS_TYPE_EXTV		0x03    // External Voltage
+#define IBUS_MEAS_TYPE_PRES		0x41    // Pressure
+#define IBUS_MEAS_TYPE_ODO1		0x7c    // Odometer1
+#define IBUS_MEAS_TYPE_ODO2		0x7d    // Odometer2
+#define IBUS_MEAS_TYPE_SPE		0x7e    // Speed			//2byte km/h
+#define IBUS_MEAS_TYPE_ALT		0xf9    // Altitude			//2 bytes signed in m
+#define IBUS_MEAS_TYPE_SNR		0xfa    // SNR
+#define IBUS_MEAS_TYPE_NOISE	0xfb    // Noise
+#define IBUS_MEAS_TYPE_RSSI		0xfc    // RSSI
+#define IBUS_MEAS_TYPE_ERR		0xfe    // Error rate
+ 
  */
 // Last sync with hexfet new_protocols/flysky_a7105.c dated 2015-09-28
 
@@ -19,6 +34,7 @@
 #define AFHDS2A_TXPACKET_SIZE	38
 #define AFHDS2A_RXPACKET_SIZE	37
 #define AFHDS2A_NUMFREQ			16
+#define FAILSAFE_V 900
 
 enum{
 	AFHDS2A_PACKET_STICKS,
@@ -76,6 +92,7 @@ static void AFHDS2A_calc_channels()
 // telemetry sensors ID
 enum{
 	AFHDS2A_SENSOR_RX_VOLTAGE   = 0x00,
+	AFHDS2A_SENSOR_RX_EXVOLTAGE = 0x03,
 	AFHDS2A_SENSOR_RX_ERR_RATE  = 0xfe,
 	AFHDS2A_SENSOR_RX_RSSI      = 0xfc,
 	AFHDS2A_SENSOR_RX_NOISE     = 0xfb,
@@ -99,22 +116,32 @@ static void AFHDS2A_update_telemetry()
     }
 #endif
 #ifdef AFHDS2A_HUB_TELEMETRY
-	for(uint8_t sensor=0; sensor<7; sensor++)
+	for(uint8_t sensor=0; sensor<10; sensor++)
 	{
         // Send FrSkyD telemetry to TX
 		uint8_t index = 9+(4*sensor);
+		uint16_t v_lipo1_2B, v_lipo2_2B;
 		switch(packet[index])
 		{
 			case AFHDS2A_SENSOR_RX_VOLTAGE:
 				//v_lipo1 = packet[index+3]<<8 | packet[index+2];
-				v_lipo1 = packet[index+2];
+				//v_lipo1 = packet[index+2];
+        v_lipo1_2B = (packet[index+3]<<8 | packet[index+2])/10;
+        v_lipo1 = v_lipo1_2B;
+				telemetry_link=1;
+				break;
+			case AFHDS2A_SENSOR_RX_EXVOLTAGE:
+			  v_lipo2_2B = (packet[index+3]<<8 | packet[index+2])/10;
+				v_lipo2 = v_lipo2_2B;
+				//v_lipo2 = packet[index+2];
 				telemetry_link=1;
 				break;
 			case AFHDS2A_SENSOR_RX_ERR_RATE:
 				RX_LQI=packet[index+2];
 				break;
 			case AFHDS2A_SENSOR_RX_RSSI:
-				RX_RSSI = -packet[index+2];
+				//RX_RSSI = -packet[index+2];
+				RX_RSSI = 100 - (packet[index+2]-60)*3; // 60 max signal, 90 min signal
 				break;
 			case 0xff:
 				return;
@@ -171,6 +198,8 @@ static void AFHDS2A_build_packet(uint8_t type)
 			packet[0] = 0x58;
 			for(uint8_t ch=0; ch<14; ch++)
 			{
+			    if(ch == 12) Servo_data[12] = 1000 + RX_RSSI*10;
+			    if(ch == 13) Servo_data[13] = 1000 + TX_RSSI*5;
 				packet[9 +  ch*2] = Servo_data[CH_AETR[ch]]&0xFF;
 				packet[10 + ch*2] = (Servo_data[CH_AETR[ch]]>>8)&0xFF;
 			}
@@ -179,12 +208,12 @@ static void AFHDS2A_build_packet(uint8_t type)
 			packet[0] = 0x56;
 			for(uint8_t ch=0; ch<14; ch++)
 			{
-				/*if((Model.limits[ch].flags & CH_FAILSAFE_EN))
+				if(CH_AETR[ch] == THROTTLE)
 				{
-					packet[9 + ch*2] = Servo_data[CH_AETR[ch]] & 0xff;
-					packet[10+ ch*2] = (Servo_data[CH_AETR[ch]] >> 8) & 0xff;
+					packet[9 + ch*2] = FAILSAFE_V & 0xff;
+					packet[10+ ch*2] = (FAILSAFE_V >> 8) & 0xff;
 				}
-				else*/
+				else
 				{
 					packet[9 + ch*2] = 0xff;
 					packet[10+ ch*2] = 0xff;
@@ -308,9 +337,10 @@ uint16_t ReadAFHDS2A()
 					else
 					{
 						// Read TX RSSI
-						int16_t temp=256-(A7105_ReadReg(A7105_1D_RSSI_THOLD)*8)/5;		// value from A7105 is between 8 for maximum signal strength to 160 or less
+//						int16_t temp=256-(A7105_ReadReg(A7105_1D_RSSI_THOLD)*8)/5;		// value from A7105 is between 8 for maximum signal strength to 160 or less
+						int16_t temp=200-(A7105_ReadReg(A7105_1D_RSSI_THOLD)*5)/4;		// value from A7105 is between 8 for maximum signal strength to 160 or less
 						if(temp<0) temp=0;
-						else if(temp>255) temp=255;
+						else if(temp>200) temp=200;
 						TX_RSSI=temp;
 						AFHDS2A_update_telemetry();
 					}
